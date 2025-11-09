@@ -24,6 +24,7 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/consultation/", include("consultation.urls")),
     path("api/documents/", include("documents.urls")),
+    path("api/tests/", include("tests_generator.urls")),
 ]
 
 # Добавление URL для медиа файлов в режиме разработки

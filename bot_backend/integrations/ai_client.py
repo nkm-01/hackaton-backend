@@ -8,7 +8,7 @@ import os
 import dotenv
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams, PointStruct
+from qdrant_client.models import Distance, VectorParams, PointStruct, SampleQuery, Sample
 from sentence_transformers import SentenceTransformer
 from openai import OpenAI
 
@@ -223,13 +223,13 @@ class AIClient:
         Returns:
             Список точек с текстом и метаданными
         """
-        # Используем scroll для получения случайных точек
-        points, _ = self.qdrant_client.scroll(
+        # Используем query_points с SampleQuery для получения случайных точек
+        points = self.qdrant_client.query_points(
             collection_name=self.collection_name,
+            query=SampleQuery(sample=Sample.RANDOM),
             limit=count,
-            with_payload=True,
-            with_vectors=False
-        )
+            with_payload=True
+        ).points
         
         result = []
         for point in points:
@@ -242,6 +242,82 @@ class AIClient:
             })
         
         return result
+    
+    def generate_test_questions(self, points: List[Dict], count: int = 10) -> List[Dict]:
+        """
+        Генерация тестовых вопросов на основе точек из Qdrant
+        
+        Args:
+            points: Список точек с текстом
+            count: Количество вопросов для генерации
+            
+        Returns:
+            Список вопросов с вариантами ответов
+        """
+        # Формирование контекста из точек
+        context = "\n\n---\n\n".join([
+            f"Фрагмент {i+1} из документа '{point['title']}':\n{point['text']}"
+            for i, point in enumerate(points)
+        ])
+        
+        # Промпт для генерации вопросов
+        prompt = f"""На основе предоставленных фрагментов документов по охране труда создай {count} тестовых вопросов.
+
+Требования:
+1. Вопросы должны быть основаны ТОЛЬКО на информации из предоставленных фрагментов
+2. Каждый вопрос должен иметь 4 варианта ответа
+3. Только один вариант правильный
+4. Неправильные варианты должны быть правдоподобными, но четко неверными
+5. Вопросы должны проверять понимание правил охраны труда
+
+Формат ответа - строго JSON массив:
+[
+  {{
+    "question": "Текст вопроса?",
+    "options": ["Вариант 1", "Вариант 2", "Вариант 3", "Вариант 4"],
+    "correct": 0
+  }}
+]
+
+где correct - индекс правильного ответа (0-3).
+
+ВАЖНО: Верни ТОЛЬКО JSON массив, без дополнительного текста.
+
+Фрагменты документов:
+
+{context}
+"""
+        
+        # Отправка запроса к LLM
+        response = self.llm.chat.completions.create(
+            model="deepseek-chat",
+            messages=[
+                {"role": "system", "content": "Ты - эксперт по охране труда. Создаешь тестовые вопросы на основе документов. Отвечай строго в формате JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7
+        )
+        
+        answer = response.choices[0].message.content.strip()
+        
+        # Очистка от markdown code fence если есть
+        if answer.startswith("```"):
+            lines = answer.split("\n")
+            if lines[0].strip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            answer = "\n".join(lines).strip()
+        
+        # Парсинг JSON
+        import json
+        try:
+            questions = json.loads(answer)
+            return questions
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON: {e}")
+            print(f"Response: {answer}")
+            raise Exception(f"Не удалось распарсить ответ LLM: {str(e)}")
 
 
 # Глобальный экземпляр клиента (будет инициализирован при запуске Django)
